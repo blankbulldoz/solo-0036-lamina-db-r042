@@ -28,6 +28,20 @@ func (s *Server) vacuum(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 200, out)
 }
+func (s *Server) rebuild(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Index string `json:"index"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.db.RebuildIndex(in.Index)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	write(w, 200, out)
+}
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	data, err := s.db.Backup()
 	if err != nil {

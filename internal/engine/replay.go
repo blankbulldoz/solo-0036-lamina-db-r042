@@ -58,7 +58,10 @@ func (d *DB) apply(r journal.Record) error {
 		if r.Horizon < d.horizon || r.Horizon > d.sequence {
 			return fmt.Errorf("invalid vacuum horizon")
 		}
-		d.store.Vacuum(r.Horizon)
+		// Applying the horizon is cheap and unconditional; actually removing
+		// versions is deferred to Open, which reclaims the retained set once
+		// replay has finished. A live vacuum reclaims incrementally by itself,
+		// so its index generations are maintained alongside the chains.
 		d.horizon = r.Horizon
 	default:
 		return fmt.Errorf("unknown record kind %s", r.Kind)

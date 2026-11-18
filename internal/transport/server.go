@@ -95,6 +95,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST "+p+"/sql", s.sql)
 	s.mux.HandleFunc("POST "+p+"/checkpoint", s.checkpoint)
 	s.mux.HandleFunc("POST "+p+"/vacuum", s.vacuum)
+	s.mux.HandleFunc("POST "+p+"/maintenance/rebuild", s.rebuild)
 	s.mux.HandleFunc("GET "+p+"/backup", s.backup)
 	s.mux.HandleFunc("GET "+p+"/changes", s.changes)
 	s.mux.HandleFunc("GET "+p+"/stats", s.stats)

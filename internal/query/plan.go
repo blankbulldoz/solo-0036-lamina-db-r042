@@ -6,9 +6,12 @@ import (
 	"sort"
 )
 
+// Choose selects an index access path only from generations the registry still
+// trusts. A generation under repair is skipped and the caller falls back to a
+// scan: an untrusted candidate set can omit a row, while a scan cannot.
 func Choose(c *catalog.Catalog, registry *index.Registry, q Request, at uint64, total int) (Plan, []string) {
 	plan := Plan{Access: "scan", Candidates: total, Snapshot: at, Residuals: len(q.Where)}
-	if q.ForceScan {
+	if q.ForceScan || registry == nil {
 		return plan, nil
 	}
 	names := make([]string, 0, len(c.Indexes))
@@ -19,7 +22,11 @@ func Choose(c *catalog.Catalog, registry *index.Registry, q Request, at uint64, 
 	var chosen []string
 	for _, name := range names {
 		definition := c.Indexes[name]
-		if definition.Relation != q.Relation || definition.Created > at {
+		if definition.Relation != q.Relation || definition.Created > at || !registry.Trusted(name) {
+			continue
+		}
+		generation, ok := registry.Visible(name)
+		if !ok {
 			continue
 		}
 		for _, p := range q.Where {
@@ -31,7 +38,7 @@ func Choose(c *catalog.Catalog, registry *index.Registry, q Request, at uint64, 
 			default:
 				continue
 			}
-			candidates := registry.Trees[name].Candidates(p.Op, p.Value)
+			candidates := generation.Tree.Candidates(p.Op, p.Value)
 			if len(candidates) < plan.Candidates || plan.Access == "scan" && len(candidates) == 0 {
 				plan.Access = "index"
 				plan.Index = name

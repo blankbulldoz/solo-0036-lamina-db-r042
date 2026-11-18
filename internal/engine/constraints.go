@@ -70,6 +70,18 @@ func (d *DB) CreateIndex(i catalog.Index) (catalog.Index, error) {
 	if err := d.publish(journal.Record{Kind: "index", Index: &i}); err != nil {
 		return i, err
 	}
-	d.indexes = index.Build(d.catalog, d.store)
+	// Build only the new index. Rebuilding every other generation here would
+	// make one DDL operation an unbounded foreground pause over all relations.
+	// A unique build was validated against the same in-memory state under this
+	// lock, so no commit can slip between validation and tree construction.
+	tree := index.NewTree()
+	for key, chain := range d.store.Tables[i.Relation] {
+		for _, v := range chain {
+			if !v.Deleted {
+				tree.Add(v.Row[i.Column], key)
+			}
+		}
+	}
+	d.indexes.AddVisible(i.Name, tree, d.sequence)
 	return i, nil
 }

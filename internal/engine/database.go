@@ -13,19 +13,25 @@ import (
 )
 
 type DB struct {
-	mu           sync.RWMutex
-	dir          string
-	catalog      *catalog.Catalog
-	store        *versions.Store
-	indexes      *index.Registry
-	wal          *journal.WAL
-	sequence     uint64
-	horizon      uint64
-	transactions map[string]*Transaction
-	closed       bool
-	commits      uint64
-	conflicts    uint64
-	queries      uint64
+	mu       sync.RWMutex
+	dir      string
+	catalog  *catalog.Catalog
+	store    *versions.Store
+	indexes  *index.Registry
+	wal      *journal.WAL
+	sequence uint64
+	horizon  uint64
+	// maintenanceMu serializes maintenance drivers. A vacuum or a staged
+	// index replacement yields mu between bounded chunks so ordinary queries
+	// keep running, but their bookkeeping must not interleave with each other.
+	maintenanceMu sync.Mutex
+	vacuum        *vacuumJob
+	rebuild       *rebuildJob
+	transactions  map[string]*Transaction
+	closed        bool
+	commits       uint64
+	conflicts     uint64
+	queries       uint64
 }
 
 func Open(dir string) (*DB, error) {
@@ -68,7 +74,16 @@ func Open(dir string) (*DB, error) {
 			return nil, fmt.Errorf("replay sequence %d: %w", r.Sequence, err)
 		}
 	}
+	// Reclamation records advance the horizon during replay. Applying the
+	// horizon to the whole retained set here is the recovery counterpart of
+	// live incremental maintenance: no foreground work can interleave, so the
+	// startup rebuild below sees exactly the retained row set.
+	d.store.Vacuum(d.horizon)
+	// Index generations are derived state. Rebuilding them from the retained
+	// version chains makes every index trusted again after a restart, and it
+	// discards any replacement that was staged but not installed before exit.
 	d.indexes = index.Build(d.catalog, d.store)
+	d.indexes.SetBuilt(d.sequence)
 	for _, relation := range d.catalog.List() {
 		if err = d.unique(relation.Name, nil); err != nil {
 			w.Close()
@@ -94,6 +109,8 @@ func (d *DB) Close() error {
 	}
 	d.closed = true
 	d.transactions = map[string]*Transaction{}
+	d.vacuum = nil
+	d.rebuild = nil
 	return d.wal.Close()
 }
 func (d *DB) publish(r journal.Record) error {
@@ -107,7 +124,14 @@ func (d *DB) publish(r journal.Record) error {
 		return fault("unavailable", "durable record cannot be applied: %s", err)
 	}
 	if len(r.Writes) > 0 {
+		// Foreground writes reach the query-visible generation immediately.
+		// A staged replacement does not absorb them here: it catches up from
+		// the journal under the same lock that installs it, so no write can
+		// fall between the scan and the switch.
 		d.indexes.Apply(d.catalog, r.Writes)
+	}
+	if r.Kind == "commit" && d.rebuild != nil {
+		d.rebuild.Commits++
 	}
 	return nil
 }
